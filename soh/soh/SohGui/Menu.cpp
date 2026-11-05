@@ -6,6 +6,7 @@
 #include <ship/Context.h>
 
 #include "Menu.h"
+#include "DualScreen.h"
 #include "BackendTypes.h"
 #include "UIWidgets.hpp"
 #include "soh/Enhancements/speedrun/Speedrun.h"
@@ -606,8 +607,9 @@ void Menu::DrawElement() {
 
     raceDisableActive = CVarGetInteger(CVAR_SETTING("DisableChanges"), 0);
 
-    windowHeight = ImGui::GetMainViewport()->WorkSize.y;
-    windowWidth = ImGui::GetMainViewport()->WorkSize.x;
+    // On dual-screen devices the menu fills the second screen instead of covering the game.
+    windowHeight = DualScreen::GetMenuSize().y;
+    windowWidth = DualScreen::GetMenuSize().x;
     auto windowFlags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings;
     bool popout = CVarGetInteger(CVAR_SETTING("Menu.Popout"), 0) && allowPopout;
     if (popout) {
@@ -630,7 +632,7 @@ void Menu::DrawElement() {
     auto windowCond = ImGuiCond_Always;
     if (!popout) {
         ImGui::SetNextWindowSize({ static_cast<float>(windowWidth), static_cast<float>(windowHeight) }, windowCond);
-        ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), windowCond, { 0.5f, 0.5f });
+        ImGui::SetNextWindowPos(DualScreen::GetMenuCenter(), windowCond, { 0.5f, 0.5f });
         ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
     }
 

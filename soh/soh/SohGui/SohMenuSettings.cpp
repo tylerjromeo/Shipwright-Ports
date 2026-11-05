@@ -2,6 +2,7 @@
 #include "soh/Notification/Notification.h"
 #include "soh/Enhancements/enhancementTypes.h"
 #include "SohModals.h"
+#include "DualScreen.h"
 #include "soh/OTRGlobals.h"
 #include <soh/GameVersions.h>
 #include "soh/ResourceManagerHelpers.h"
@@ -797,6 +798,51 @@ void SohMenu::AddMenuSettings() {
         .WindowName("Configure Controller")
         .HideInSearch(true)
         .Options(WindowButtonOptions().Tooltip("Enables the separate Bindings Window."));
+
+#ifdef __ANDROID__
+    // Dual Screen (e.g. AYN Thor): menus and trackers on the second display.
+    path.sidebarName = "Dual Screen";
+    path.column = SECTION_COLUMN_1;
+    AddSidebarEntry("Settings", path.sidebarName, 1);
+    AddWidget(path, "Second Screen", WIDGET_SEPARATOR_TEXT);
+    AddWidget(path, "Use Second Screen", WIDGET_CVAR_CHECKBOX)
+        .CVar("gSettings.SecondaryScreen.Enabled")
+        .RaceDisable(false)
+        .Options(CheckboxOptions().DefaultValue(true).Tooltip(
+            "On devices with a second display, draw menus and trackers there instead of over the game. "
+            "Has no effect on single-screen devices."));
+    AddWidget(path, "Show Menu on Second Screen", WIDGET_CVAR_CHECKBOX)
+        .CVar(CVAR_DUAL_SCREEN_MENU)
+        .RaceDisable(false)
+        .Options(CheckboxOptions().DefaultValue(true).Tooltip(
+            "Open this menu on the second screen. Turn off to open it over the game as usual."));
+    AddWidget(path, "Second Screen UI Scale", WIDGET_CVAR_SLIDER_FLOAT)
+        .CVar("gSettings.SecondaryScreen.Scale")
+        .RaceDisable(false)
+        .Options(FloatSliderOptions()
+                     .Tooltip("Size of menus and trackers on the second screen.")
+                     .Format("%.2f")
+                     .Step(0.05f)
+                     .Min(0.5f)
+                     .Max(2.0f)
+                     .DefaultValue(1.0f));
+    AddWidget(path, "Trackers", WIDGET_SEPARATOR_TEXT);
+    AddWidget(path, "Check/Entrance/Hint Trackers Fill Second Screen", WIDGET_CVAR_CHECKBOX)
+        .CVar(CVAR_DUAL_SCREEN_TRACKER_DOCK)
+        .RaceDisable(false)
+        .Options(CheckboxOptions().DefaultValue(true).Tooltip(
+            "Shows the check, entrance and hint trackers full-screen on the second screen, as tabs when several are "
+            "open. They can't be moved there, so dragging a finger scrolls them. Open them from the Randomizer menu."));
+    AddWidget(path, "Move Item Tracker to Second Screen", WIDGET_BUTTON)
+        .RaceDisable(false)
+        .Callback([](WidgetInfo&) { DualScreen::RequestArrangeTrackers(true); })
+        .Options(ButtonOptions().Tooltip(
+            "Lays out the item tracker window(s) on the second screen. By default the item tracker stays over the game."));
+    AddWidget(path, "Move Item Tracker to Game Screen", WIDGET_BUTTON)
+        .RaceDisable(false)
+        .Callback([](WidgetInfo&) { DualScreen::RequestArrangeTrackers(false); })
+        .Options(ButtonOptions().Tooltip("Moves the item tracker window(s) back onto the game screen."));
+#endif
 
 #if defined(__ANDROID__) || (defined(__IOS__) && !defined(__TVOS__))
     // Touch Controls

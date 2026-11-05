@@ -1,0 +1,680 @@
+diff --git a/include/ship/window/gui/SecondaryScreen.h b/include/ship/window/gui/SecondaryScreen.h
+new file mode 100644
+index 00000000..ab696f08
+--- /dev/null
++++ b/include/ship/window/gui/SecondaryScreen.h
+@@ -0,0 +1,68 @@
++#pragma once
++
++// SecondaryScreen: lets ImGui windows (menus, trackers, ...) live on a second physical display, such as the bottom
++// screen of a dual-screen Android handheld (AYN Thor, Surface Duo, ...).
++//
++// How it works: the ImGui canvas is widened so the secondary display sits to the right of the primary one:
++//
++//   x = 0                     x = PrimarySize.x            x = PrimarySize.x + SecondarySize.x
++//   +-------------------------+----------------------------+
++//   |  primary display        |  secondary display         |
++//   |  (game + overlays)      |  (menus / trackers)        |
++//   +-------------------------+----------------------------+
++//
++// Each frame the same ImDrawData is rendered twice: once onto the primary window (clipped to the left part) and once
++// onto the secondary display's surface (offset to the right part). Touches on the secondary display are fed to ImGui
++// at the matching canvas position. Any ImGui window whose position is inside the secondary rect therefore shows up,
++// and is interactive, on the secondary display without any per-window code.
++//
++// When no secondary display is attached (or the feature is disabled) everything here is a no-op and the canvas is
++// just the primary display, so single-screen devices behave exactly as before.
++
++#include <imgui.h>
++
++namespace Ship {
++namespace SecondaryScreen {
++
++// CVars (all optional).
++#define CVAR_SECONDARY_SCREEN_ENABLED "gSettings.SecondaryScreen.Enabled" // default 1
++#define CVAR_SECONDARY_SCREEN_SCALE "gSettings.SecondaryScreen.Scale"     // UI scale multiplier, default 1.0
++
++// True when a secondary display is attached, its surface is ready and the feature is enabled.
++bool IsActive();
++
++// Size of the primary display in ImGui canvas units. Always valid (equals the whole canvas when inactive).
++ImVec2 GetPrimarySize();
++ImVec2 GetPrimaryCenter();
++
++// Rect of the secondary display in ImGui canvas units. Only meaningful while IsActive().
++ImVec2 GetSecondaryPos();
++ImVec2 GetSecondarySize();
++ImVec2 GetSecondaryCenter();
++
++// True if the given canvas point lies on the secondary display (always false while inactive).
++bool ContainsPoint(ImVec2 point);
++
++// Helpers for code that wants to "center something on the screen the UI lives on".
++// Returns the secondary rect when active, else the primary rect.
++ImVec2 GetUiScreenPos();
++ImVec2 GetUiScreenSize();
++ImVec2 GetUiScreenCenter();
++
++// --- Integration points (called by the GUI backend, not by game code) ---
++
++// Call right after the platform backend's NewFrame (which sets io.DisplaySize to the primary window size) and before
++// ImGui::NewFrame(). Widens io.DisplaySize and injects queued secondary-display touch events.
++void NewFrame();
++
++// Call right after ImGui::NewFrame(). Turns vertical finger drags on the secondary display into scrolling of the
++// window under the finger (ImGui has no native touch scrolling). Horizontal drags (sliders) are left alone.
++void AfterNewFrame();
++
++// Renders `drawData` onto both displays. `renderFn` is the renderer backend's RenderDrawData function. Must be called
++// on the render thread with the primary GL context current. Returns false if the secondary display is not active, in
++// which case the caller should render `drawData` normally.
++bool RenderDrawData(ImDrawData* drawData, void (*renderFn)(ImDrawData*));
++
++} // namespace SecondaryScreen
++} // namespace Ship
+diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
+index 45989b66..16a8a2c5 100644
+--- a/src/CMakeLists.txt
++++ b/src/CMakeLists.txt
+@@ -124,6 +124,8 @@ if (USE_OPENGLES)
+     if (CMAKE_SYSTEM_NAME STREQUAL "Android")
+         find_library(OPENGLES_LIBRARY GLESv3)
+         target_link_libraries(libultraship PRIVATE GLESv3)
++        # SecondaryScreen: EGL surface on a second display + ANativeWindow from a Java Surface.
++        target_link_libraries(libultraship PRIVATE EGL android)
+     elseif(CMAKE_SYSTEM_NAME STREQUAL "OpenBSD")
+         target_link_libraries(libultraship PRIVATE OpenGL::GLES2)
+     else()
+diff --git a/src/fast/Fast3dGui.cpp b/src/fast/Fast3dGui.cpp
+index c6666909..3c824c27 100644
+--- a/src/fast/Fast3dGui.cpp
++++ b/src/fast/Fast3dGui.cpp
+@@ -9,6 +9,7 @@
+ #include "fast/resource/type/Texture.h"
+ #include "ship/window/gui/resource/GuiTextureFactory.h"
+ #include "ship/resource/File.h"
++#include "ship/window/gui/SecondaryScreen.h"
+ 
+ #ifdef __APPLE__
+ #include <SDL_hints.h>
+@@ -237,6 +238,8 @@ void Fast3dGui::ImGuiWMNewFrame() {
+         case WindowBackend::FAST3D_SDL_OPENGL:
+         case WindowBackend::FAST3D_SDL_METAL:
+             ImGui_ImplSDL2_NewFrame();
++            // Widen the canvas onto a secondary display, if one is attached (no-op otherwise).
++            Ship::SecondaryScreen::NewFrame();
+             break;
+ #ifdef ENABLE_DX11
+         case WindowBackend::FAST3D_DXGI_DX11:
+@@ -262,7 +265,9 @@ void Fast3dGui::ImGuiRenderDrawData(ImDrawData* data) {
+     switch (mImpl.Backend) {
+ #ifdef ENABLE_OPENGL
+         case WindowBackend::FAST3D_SDL_OPENGL:
+-            ImGui_ImplOpenGL3_RenderDrawData(data);
++            if (!Ship::SecondaryScreen::RenderDrawData(data, ImGui_ImplOpenGL3_RenderDrawData)) {
++                ImGui_ImplOpenGL3_RenderDrawData(data);
++            }
+             break;
+ #endif
+ 
+diff --git a/src/ship/window/gui/FileBrowserWindow.cpp b/src/ship/window/gui/FileBrowserWindow.cpp
+index e762c55b..5276557b 100644
+--- a/src/ship/window/gui/FileBrowserWindow.cpp
++++ b/src/ship/window/gui/FileBrowserWindow.cpp
+@@ -1,4 +1,5 @@
+ #include "ship/window/gui/FileBrowserWindow.h"
++#include "ship/window/gui/SecondaryScreen.h"
+ #include "ship/window/gui/IconsFontAwesome4.h"
+ 
+ #include <imgui.h>
+@@ -98,12 +99,12 @@ void FileBrowserWindow::DrawElement() {
+ 
+     const std::string popupId = mRequest.Title + "###ShipFileBrowser";
+     if (mOpenPopup) {
+-        ImVec2 center = ImGui::GetMainViewport()->GetWorkCenter();
++        ImVec2 center = SecondaryScreen::GetUiScreenCenter();
+         ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+         ImGui::OpenPopup(popupId.c_str());
+         mOpenPopup = false;
+     }
+-    const ImVec2 viewport = ImGui::GetMainViewport()->WorkSize;
++    const ImVec2 viewport = SecondaryScreen::GetUiScreenSize();
+     ImGui::SetNextWindowSize(ImVec2(viewport.x * 0.8f, viewport.y * 0.8f), ImGuiCond_Appearing);
+ 
+     if (ImGui::BeginPopupModal(popupId.c_str(), nullptr,
+diff --git a/src/ship/window/gui/GameOverlay.cpp b/src/ship/window/gui/GameOverlay.cpp
+index eaea3cd7..e33e6b41 100644
+--- a/src/ship/window/gui/GameOverlay.cpp
++++ b/src/ship/window/gui/GameOverlay.cpp
+@@ -1,4 +1,5 @@
+ #include "ship/window/gui/GameOverlay.h"
++#include "ship/window/gui/SecondaryScreen.h"
+ 
+ #include "ship/config/ConsoleVariable.h"
+ #include "ship/resource/File.h"
+@@ -116,13 +117,12 @@ void GameOverlay::CleanupNotifications() {
+ }
+ 
+ float GameOverlay::GetScreenWidth() {
+-    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+-    return viewport->Size.x;
++    // The overlay belongs to the game display, not the whole (possibly dual-screen) ImGui canvas.
++    return SecondaryScreen::GetPrimarySize().x;
+ }
+ 
+ float GameOverlay::GetScreenHeight() {
+-    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+-    return viewport->Size.y;
++    return SecondaryScreen::GetPrimarySize().y;
+ }
+ 
+ float GameOverlay::GetStringWidth(const char* text) {
+@@ -189,7 +189,7 @@ void GameOverlay::Draw() {
+     const ImGuiViewport* viewport = ImGui::GetMainViewport();
+ 
+     ImGui::SetNextWindowPos(viewport->Pos, ImGuiCond_Always);
+-    ImGui::SetNextWindowSize(viewport->Size, ImGuiCond_Always);
++    ImGui::SetNextWindowSize(SecondaryScreen::GetPrimarySize(), ImGuiCond_Always);
+     ImGui::Begin("GameOverlay", nullptr,
+                  ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
+                      ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoSavedSettings |
+diff --git a/src/ship/window/gui/Gui.cpp b/src/ship/window/gui/Gui.cpp
+index 9f4ef172..8cd9ac7c 100644
+--- a/src/ship/window/gui/Gui.cpp
++++ b/src/ship/window/gui/Gui.cpp
+@@ -15,6 +15,7 @@
+ #include "ship/window/gui/Fonts.h"
+ #include "ship/window/gui/resource/GuiTextureFactory.h"
+ #include "ship/window/gui/resource/GuiTexture.h"
++#include "ship/window/gui/SecondaryScreen.h"
+ #ifdef __ANDROID__
+ #include "ship/port/mobile/MobileImpl.h"
+ #endif
+@@ -304,6 +305,8 @@ void Gui::StartFrame() {
+     mImGuiIo->BackendFlags |= ImGuiBackendFlags_HasGamepad;
+ #endif
+     ImGui::NewFrame();
++    // Touch drag-to-scroll on a secondary display (no-op without one).
++    SecondaryScreen::AfterNewFrame();
+ }
+ 
+ void Gui::EndFrame() {
+diff --git a/src/ship/window/gui/SecondaryScreen.cpp b/src/ship/window/gui/SecondaryScreen.cpp
+new file mode 100644
+index 00000000..f76c94aa
+--- /dev/null
++++ b/src/ship/window/gui/SecondaryScreen.cpp
+@@ -0,0 +1,473 @@
++#include "ship/window/gui/SecondaryScreen.h"
++
++#include <algorithm>
++#include <cfloat>
++#include <cmath>
++
++#include <imgui_internal.h>
++
++#include "ship/Context.h"
++#include "ship/config/ConsoleVariable.h"
++
++namespace Ship {
++namespace SecondaryScreen {
++
++namespace {
++// Per-frame layout, written in NewFrame() on the render thread and read by game/UI code on the same thread.
++bool sFrameActive = false;
++ImVec2 sPrimarySize = ImVec2(0.0f, 0.0f);
++ImVec2 sSecondaryPos = ImVec2(0.0f, 0.0f);
++ImVec2 sSecondarySize = ImVec2(0.0f, 0.0f);
++float sSecondaryScale = 1.0f; // physical pixels per canvas unit on the secondary display
++
++bool FeatureEnabled() {
++    auto ctx = Ship::Context::GetRawInstance();
++    if (ctx == nullptr || ctx->GetConsoleVariables() == nullptr) {
++        return true;
++    }
++    return ctx->GetConsoleVariables()->GetInteger(CVAR_SECONDARY_SCREEN_ENABLED, 1) != 0;
++}
++
++float UserScale() {
++    auto ctx = Ship::Context::GetRawInstance();
++    float scale = 1.0f;
++    if (ctx != nullptr && ctx->GetConsoleVariables() != nullptr) {
++        scale = ctx->GetConsoleVariables()->GetFloat(CVAR_SECONDARY_SCREEN_SCALE, 1.0f);
++    }
++    return std::clamp(scale, 0.25f, 4.0f);
++}
++} // namespace
++
++bool IsActive() {
++    return sFrameActive;
++}
++
++ImVec2 GetPrimarySize() {
++    if (sPrimarySize.x <= 0.0f || sPrimarySize.y <= 0.0f) {
++        return ImGui::GetIO().DisplaySize;
++    }
++    return sPrimarySize;
++}
++
++ImVec2 GetPrimaryCenter() {
++    ImVec2 size = GetPrimarySize();
++    return ImVec2(size.x * 0.5f, size.y * 0.5f);
++}
++
++ImVec2 GetSecondaryPos() {
++    return sSecondaryPos;
++}
++
++ImVec2 GetSecondarySize() {
++    return sSecondarySize;
++}
++
++ImVec2 GetSecondaryCenter() {
++    return ImVec2(sSecondaryPos.x + sSecondarySize.x * 0.5f, sSecondaryPos.y + sSecondarySize.y * 0.5f);
++}
++
++bool ContainsPoint(ImVec2 point) {
++    return sFrameActive && point.x >= sSecondaryPos.x && point.y >= sSecondaryPos.y &&
++           point.x < sSecondaryPos.x + sSecondarySize.x && point.y < sSecondaryPos.y + sSecondarySize.y;
++}
++
++ImVec2 GetUiScreenPos() {
++    return sFrameActive ? sSecondaryPos : ImVec2(0.0f, 0.0f);
++}
++
++ImVec2 GetUiScreenSize() {
++    return sFrameActive ? sSecondarySize : GetPrimarySize();
++}
++
++ImVec2 GetUiScreenCenter() {
++    return sFrameActive ? GetSecondaryCenter() : GetPrimaryCenter();
++}
++
++} // namespace SecondaryScreen
++} // namespace Ship
++
++#if defined(__ANDROID__)
++
++#include <EGL/egl.h>
++#include <EGL/eglext.h>
++#include <GLES3/gl3.h>
++#include <android/log.h>
++#include <android/native_window.h>
++#include <android/native_window_jni.h>
++#include <jni.h>
++
++#include <chrono>
++#include <condition_variable>
++#include <mutex>
++#include <vector>
++
++#define SS_LOG(...) __android_log_print(ANDROID_LOG_INFO, "SoHSecondaryScreen", __VA_ARGS__)
++
++namespace Ship {
++namespace SecondaryScreen {
++namespace {
++
++struct TouchEvent {
++    int action; // 0 = down, 1 = move, 2 = up/cancel
++    float x;    // physical pixels on the secondary surface
++    float y;
++};
++
++struct State {
++    std::mutex mutex;
++    std::condition_variable destroyedCv;
++
++    // Written by JNI (Android UI thread), consumed on the render thread.
++    ANativeWindow* pendingWindow = nullptr;
++    bool pendingDestroy = false;
++    float densityScale = 1.0f; // secondary density / primary density
++    std::vector<TouchEvent> touches;
++
++    // Render thread only.
++    EGLDisplay display = EGL_NO_DISPLAY;
++    EGLContext context = EGL_NO_CONTEXT;
++    EGLSurface surface = EGL_NO_SURFACE;
++    ANativeWindow* window = nullptr;
++    EGLint surfaceWidth = 0;
++    EGLint surfaceHeight = 0;
++    bool touchDown = false;
++};
++
++State sState;
++
++// Requires sState.mutex. Render thread.
++void DestroySurfaceLocked() {
++    if (sState.display != EGL_NO_DISPLAY) {
++        if (sState.surface != EGL_NO_SURFACE) {
++            eglDestroySurface(sState.display, sState.surface);
++        }
++        if (sState.context != EGL_NO_CONTEXT) {
++            eglDestroyContext(sState.display, sState.context);
++        }
++    }
++    if (sState.window != nullptr) {
++        ANativeWindow_release(sState.window);
++    }
++    sState.display = EGL_NO_DISPLAY;
++    sState.context = EGL_NO_CONTEXT;
++    sState.surface = EGL_NO_SURFACE;
++    sState.window = nullptr;
++    sState.surfaceWidth = 0;
++    sState.surfaceHeight = 0;
++}
++
++// Requires sState.mutex. Render thread, primary GL context current. Takes ownership of `window` on success.
++bool CreateSurfaceLocked(ANativeWindow* window) {
++    EGLDisplay display = eglGetCurrentDisplay();
++    EGLContext mainContext = eglGetCurrentContext();
++    if (display == EGL_NO_DISPLAY || mainContext == EGL_NO_CONTEXT) {
++        SS_LOG("No current EGL context; cannot create secondary surface");
++        return false;
++    }
++
++    // Use the primary context's config so the shared context is guaranteed to be compatible.
++    EGLint configId = 0;
++    EGLint clientVersion = 3;
++    eglQueryContext(display, mainContext, EGL_CONFIG_ID, &configId);
++    eglQueryContext(display, mainContext, EGL_CONTEXT_CLIENT_VERSION, &clientVersion);
++
++    EGLConfig config = nullptr;
++    EGLint numConfigs = 0;
++    const EGLint byIdAttribs[] = { EGL_CONFIG_ID, configId, EGL_NONE };
++    if (eglChooseConfig(display, byIdAttribs, &config, 1, &numConfigs) != EGL_TRUE || numConfigs == 0) {
++        const EGLint fallbackAttribs[] = { EGL_RENDERABLE_TYPE,
++                                           EGL_OPENGL_ES3_BIT_KHR,
++                                           EGL_SURFACE_TYPE,
++                                           EGL_WINDOW_BIT,
++                                           EGL_RED_SIZE,
++                                           8,
++                                           EGL_GREEN_SIZE,
++                                           8,
++                                           EGL_BLUE_SIZE,
++                                           8,
++                                           EGL_NONE };
++        if (eglChooseConfig(display, fallbackAttribs, &config, 1, &numConfigs) != EGL_TRUE || numConfigs == 0) {
++            SS_LOG("eglChooseConfig failed: 0x%x", eglGetError());
++            return false;
++        }
++    }
++
++    EGLint visualId = 0;
++    if (eglGetConfigAttrib(display, config, EGL_NATIVE_VISUAL_ID, &visualId) == EGL_TRUE) {
++        ANativeWindow_setBuffersGeometry(window, 0, 0, visualId);
++    }
++
++    const EGLint ctxAttribs[] = { EGL_CONTEXT_CLIENT_VERSION, clientVersion, EGL_NONE };
++    // Shared with the primary context, so ImGui's font texture, shader, buffers and the game framebuffer textures are
++    // all usable here.
++    EGLContext context = eglCreateContext(display, config, mainContext, ctxAttribs);
++    if (context == EGL_NO_CONTEXT) {
++        SS_LOG("eglCreateContext failed: 0x%x", eglGetError());
++        return false;
++    }
++
++    EGLSurface surface = eglCreateWindowSurface(display, config, window, nullptr);
++    if (surface == EGL_NO_SURFACE) {
++        SS_LOG("eglCreateWindowSurface failed: 0x%x", eglGetError());
++        eglDestroyContext(display, context);
++        return false;
++    }
++
++    // Don't let the secondary display's vsync throttle the game: set swap interval 0 on our surface.
++    EGLDisplay prevDisplay = eglGetCurrentDisplay();
++    EGLSurface prevDraw = eglGetCurrentSurface(EGL_DRAW);
++    EGLSurface prevRead = eglGetCurrentSurface(EGL_READ);
++    EGLContext prevContext = eglGetCurrentContext();
++    if (eglMakeCurrent(display, surface, surface, context) == EGL_TRUE) {
++        eglSwapInterval(display, 0);
++        eglMakeCurrent(prevDisplay, prevDraw, prevRead, prevContext);
++    }
++
++    sState.display = display;
++    sState.context = context;
++    sState.surface = surface;
++    sState.window = window;
++    SS_LOG("Secondary surface created (config %d, GLES %d)", configId, clientVersion);
++    return true;
++}
++
++} // namespace
++
++void NewFrame() {
++    ImGuiIO& io = ImGui::GetIO();
++    sPrimarySize = io.DisplaySize;
++
++    std::vector<TouchEvent> touches;
++    float densityScale = 1.0f;
++    {
++        std::lock_guard<std::mutex> lock(sState.mutex);
++
++        if (sState.pendingDestroy) {
++            DestroySurfaceLocked();
++            sState.pendingDestroy = false;
++            sState.destroyedCv.notify_all();
++        }
++        if (sState.pendingWindow != nullptr) {
++            ANativeWindow* window = sState.pendingWindow;
++            sState.pendingWindow = nullptr;
++            DestroySurfaceLocked();
++            if (!CreateSurfaceLocked(window)) {
++                ANativeWindow_release(window);
++            }
++        }
++        if (sState.surface != EGL_NO_SURFACE) {
++            eglQuerySurface(sState.display, sState.surface, EGL_WIDTH, &sState.surfaceWidth);
++            eglQuerySurface(sState.display, sState.surface, EGL_HEIGHT, &sState.surfaceHeight);
++        }
++
++        touches.swap(sState.touches);
++        densityScale = sState.densityScale;
++
++        sFrameActive = sState.surface != EGL_NO_SURFACE && sState.surfaceWidth > 0 && sState.surfaceHeight > 0 &&
++                       FeatureEnabled();
++
++        if (sFrameActive) {
++            sSecondaryScale = std::max(0.1f, densityScale * UserScale());
++            sSecondaryPos = ImVec2(sPrimarySize.x, 0.0f);
++            sSecondarySize = ImVec2(std::floor(sState.surfaceWidth / sSecondaryScale),
++                                    std::floor(sState.surfaceHeight / sSecondaryScale));
++        }
++    }
++
++    if (!sFrameActive) {
++        // Release a touch that was in progress when the display went away so ImGui doesn't think it's still held.
++        if (sState.touchDown) {
++            io.AddMouseButtonEvent(ImGuiMouseButton_Left, false);
++            sState.touchDown = false;
++        }
++        return;
++    }
++
++    io.DisplaySize = ImVec2(sPrimarySize.x + sSecondarySize.x, std::max(sPrimarySize.y, sSecondarySize.y));
++
++    for (const TouchEvent& touch : touches) {
++        ImVec2 pos(sSecondaryPos.x + touch.x / sSecondaryScale, sSecondaryPos.y + touch.y / sSecondaryScale);
++        io.AddMouseSourceEvent(ImGuiMouseSource_TouchScreen);
++        io.AddMousePosEvent(pos.x, pos.y);
++        if (touch.action == 0 && !sState.touchDown) {
++            io.AddMouseSourceEvent(ImGuiMouseSource_TouchScreen);
++            io.AddMouseButtonEvent(ImGuiMouseButton_Left, true);
++            sState.touchDown = true;
++        } else if (touch.action == 2 && sState.touchDown) {
++            io.AddMouseSourceEvent(ImGuiMouseSource_TouchScreen);
++            io.AddMouseButtonEvent(ImGuiMouseButton_Left, false);
++            sState.touchDown = false;
++        }
++    }
++}
++
++void AfterNewFrame() {
++    static bool sTracking = false;
++    static bool sScrolling = false;
++    static ImGuiID sTargetId = 0;
++    static ImVec2 sStart;
++
++    ImGuiContext& g = *GImGui;
++    ImGuiIO& io = g.IO;
++    if (!sFrameActive || !io.MouseDown[0]) {
++        sTracking = sScrolling = false;
++        sTargetId = 0;
++        return;
++    }
++
++    if (io.MouseClicked[0]) {
++        // Only touches that land on the secondary display (mouse/primary-screen input is unaffected).
++        sTracking = sState.touchDown && ContainsPoint(io.MousePos);
++        sScrolling = false;
++        sStart = io.MousePos;
++        sTargetId = 0;
++        if (sTracking) {
++            // Scroll the innermost scrollable window under the finger (e.g. a table's scrolling region).
++            for (ImGuiWindow* w = g.HoveredWindow; w != nullptr; w = w->ParentWindow) {
++                if (w->ScrollMax.y > 0.0f && !(w->Flags & ImGuiWindowFlags_NoScrollWithMouse)) {
++                    sTargetId = w->ID;
++                    break;
++                }
++            }
++        }
++        return;
++    }
++
++    if (!sTracking || sTargetId == 0) {
++        return;
++    }
++    ImGuiWindow* target = ImGui::FindWindowByID(sTargetId);
++    if (target == nullptr) {
++        sTracking = false;
++        return;
++    }
++
++    const float dx = io.MousePos.x - sStart.x;
++    const float dy = io.MousePos.y - sStart.y;
++    if (!sScrolling && std::fabs(dy) > 12.0f && std::fabs(dy) > std::fabs(dx)) {
++        sScrolling = true;
++    }
++    if (sScrolling) {
++        // Cancel whatever the finger first pressed (button, tree node, window move) so lifting it isn't a click.
++        ImGui::ClearActiveID();
++        g.MovingWindow = nullptr;
++        ImGui::SetScrollY(target, target->Scroll.y - io.MouseDelta.y);
++    }
++}
++
++bool RenderDrawData(ImDrawData* drawData, void (*renderFn)(ImDrawData*)) {
++    if (!sFrameActive || drawData == nullptr || renderFn == nullptr) {
++        return false;
++    }
++
++    // Primary display: the left part of the canvas.
++    ImDrawData primary = *drawData;
++    primary.DisplayPos = ImVec2(0.0f, 0.0f);
++    primary.DisplaySize = sPrimarySize;
++    renderFn(&primary);
++
++    std::lock_guard<std::mutex> lock(sState.mutex);
++    if (sState.surface == EGL_NO_SURFACE) {
++        return true;
++    }
++
++    EGLDisplay prevDisplay = eglGetCurrentDisplay();
++    EGLSurface prevDraw = eglGetCurrentSurface(EGL_DRAW);
++    EGLSurface prevRead = eglGetCurrentSurface(EGL_READ);
++    EGLContext prevContext = eglGetCurrentContext();
++
++    if (eglMakeCurrent(sState.display, sState.surface, sState.surface, sState.context) != EGL_TRUE) {
++        SS_LOG("eglMakeCurrent(secondary) failed: 0x%x", eglGetError());
++        return true;
++    }
++
++    glViewport(0, 0, sState.surfaceWidth, sState.surfaceHeight);
++    glDisable(GL_SCISSOR_TEST);
++    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
++    glClear(GL_COLOR_BUFFER_BIT);
++
++    // Secondary display: the right part of the canvas, scaled up to the surface's physical resolution.
++    ImDrawData secondary = *drawData;
++    secondary.DisplayPos = sSecondaryPos;
++    secondary.DisplaySize = sSecondarySize;
++    secondary.FramebufferScale = ImVec2(sSecondaryScale, sSecondaryScale);
++    renderFn(&secondary);
++
++    eglSwapBuffers(sState.display, sState.surface);
++    eglMakeCurrent(prevDisplay, prevDraw, prevRead, prevContext);
++    return true;
++}
++
++} // namespace SecondaryScreen
++} // namespace Ship
++
++// --- JNI: called from com.dishii.soh.DualScreenManager on the Android UI thread ---
++
++extern "C" JNIEXPORT void JNICALL Java_com_dishii_soh_DualScreenManager_nativeSurfaceChanged(JNIEnv* env, jclass,
++                                                                                          jobject surface, jint width,
++                                                                                          jint height,
++                                                                                          jfloat densityScale) {
++    using namespace Ship::SecondaryScreen;
++    ANativeWindow* window = ANativeWindow_fromSurface(env, surface);
++    if (window == nullptr) {
++        return;
++    }
++    std::lock_guard<std::mutex> lock(sState.mutex);
++    if (sState.pendingWindow != nullptr) {
++        ANativeWindow_release(sState.pendingWindow);
++    }
++    sState.pendingWindow = window;
++    sState.pendingDestroy = false;
++    sState.densityScale = densityScale > 0.0f ? densityScale : 1.0f;
++    SS_LOG("Secondary surface changed: %dx%d, density scale %.2f", width, height, densityScale);
++}
++
++extern "C" JNIEXPORT void JNICALL Java_com_dishii_soh_DualScreenManager_nativeSurfaceDestroyed(JNIEnv*, jclass) {
++    using namespace Ship::SecondaryScreen;
++    std::unique_lock<std::mutex> lock(sState.mutex);
++    if (sState.pendingWindow != nullptr) {
++        ANativeWindow_release(sState.pendingWindow);
++        sState.pendingWindow = nullptr;
++    }
++    sState.touches.clear();
++    if (sState.surface == EGL_NO_SURFACE) {
++        return;
++    }
++    sState.pendingDestroy = true;
++    // Android requires that we stop using the Surface before surfaceDestroyed() returns. Wait for the render thread to
++    // release it; time out in case rendering is paused (the surface is then simply never touched again before the
++    // render thread destroys it on its next frame).
++    sState.destroyedCv.wait_for(lock, std::chrono::milliseconds(500), [] { return !sState.pendingDestroy; });
++    SS_LOG("Secondary surface destroyed");
++}
++
++extern "C" JNIEXPORT void JNICALL Java_com_dishii_soh_DualScreenManager_nativeTouch(JNIEnv*, jclass, jint action,
++                                                                                 jfloat x, jfloat y) {
++    using namespace Ship::SecondaryScreen;
++    std::lock_guard<std::mutex> lock(sState.mutex);
++    if (sState.touches.size() < 256) {
++        sState.touches.push_back({ action, x, y });
++    }
++}
++
++#else // !__ANDROID__
++
++namespace Ship {
++namespace SecondaryScreen {
++
++void NewFrame() {
++    sPrimarySize = ImGui::GetIO().DisplaySize;
++    sFrameActive = false;
++}
++
++void AfterNewFrame() {
++}
++
++bool RenderDrawData(ImDrawData*, void (*)(ImDrawData*)) {
++    return false;
++}
++
++} // namespace SecondaryScreen
++} // namespace Ship
++
++#endif

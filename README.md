@@ -1,6 +1,36 @@
 ![Ship of Harkinian](docs/shiptitle.darkmode.png#gh-dark-mode-only)
 ![Ship of Harkinian](docs/shiptitle.lightmode.png#gh-light-mode-only)
 
+## Dual-screen fork (AYN Thor and other two-screen Android handhelds)
+
+This fork adds second-screen support to the Android port: on a device with a second display, Ship's UI moves off the game.
+
+- The Ship menu (Back/Select) opens full-screen on the second screen; the game stays unobstructed on the main screen.
+- The check, entrance and hint trackers fill the second screen as fixed tabs. The item tracker stays over the game by default.
+- Touch works on the second screen, and a vertical finger drag scrolls lists and menu pages.
+- Settings live under **Settings → Dual Screen** (on/off, menu placement, UI scale, tracker layout).
+- Single-screen devices are unaffected.
+
+How it works: the ImGui canvas is widened to span both displays and each frame's UI is drawn twice, once per display
+(`libultraship/src/ship/window/gui/SecondaryScreen.cpp`, shipped as `CMake/patches/libultraship-android-dual-screen.patch`).
+The Android side (`DualScreenManager.java`) hosts a surface on the second display and forwards its touches.
+
+### Building
+
+```bash
+git submodule update --init libultraship
+git -C libultraship apply ../CMake/patches/libultraship-android.patch
+git -C libultraship apply --ignore-space-change ../CMake/patches/libultraship-powervr.patch
+git -C libultraship apply ../CMake/patches/libultraship-android-fullscreen.patch
+git -C libultraship apply ../CMake/patches/libultraship-android-dual-screen.patch
+cmake -S . -B build-host-tools -G Ninja -DSOH_TOOLS_ONLY=ON -DCMAKE_BUILD_TYPE=Release
+cmake --build build-host-tools --target GenerateSohOtr
+cd Android && ./gradlew :app:assembleDebug
+```
+
+Debug builds install as `com.linkzenic.soh.localtest` and use the `SOH93-Test` data folder, so they sit alongside a normal install.
+
+
 * [Website](https://www.shipofharkinian.com)
 * [Discord](https://discord.com/invite/harbourmasters)
 

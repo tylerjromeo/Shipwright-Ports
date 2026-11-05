@@ -1,6 +1,7 @@
 #include <libultraship/bridge/consolevariablebridge.h>
 #include "libultraship/libultra/controller.h"
 #include <ship/Context.h>
+#include "soh/SohGui/DualScreen.h"
 #include <libultraship/controller/controldeck/ControlDeck.h>
 #include <imgui.h>
 #include <spdlog/spdlog.h>
@@ -114,7 +115,7 @@ void InputViewer::DrawElement() {
         }
 
         ImVec2 mainPos = ImGui::GetWindowPos();
-        ImVec2 size = ImGui::GetMainViewport()->WorkSize;
+        ImVec2 size = DualScreen::GetGameSize();
 
 #ifdef __WIIU__
         const float scale = CVarGetFloat(CVAR_INPUT_VIEWER("Scale"), 1.0f) * 2.0f;

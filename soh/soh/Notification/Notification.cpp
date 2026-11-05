@@ -1,5 +1,6 @@
 
 #include "Notification.h"
+#include "soh/SohGui/DualScreen.h"
 #include <libultraship/bridge/consolevariablebridge.h>
 #include <ship/Context.h>
 
@@ -18,6 +19,8 @@ static std::vector<Options> notifications = {};
 
 void Window::Draw() {
     auto vp = ImGui::GetMainViewport();
+    // Notifications belong to the game display, even when the ImGui canvas spans a second screen.
+    const ImVec2 vpSize = DualScreen::GetGameSize();
 
     const float margin = 30.0f;
     const float padding = 10.0f;
@@ -31,13 +34,13 @@ void Window::Draw() {
             basePosition = ImVec2(vp->Pos.x + margin, vp->Pos.y + margin);
             break;
         case 1: // Top Right
-            basePosition = ImVec2(vp->Pos.x + vp->Size.x - margin, vp->Pos.y + margin);
+            basePosition = ImVec2(vp->Pos.x + vpSize.x - margin, vp->Pos.y + margin);
             break;
         case 2: // Bottom Left
-            basePosition = ImVec2(vp->Pos.x + margin, vp->Pos.y + vp->Size.y - margin);
+            basePosition = ImVec2(vp->Pos.x + margin, vp->Pos.y + vpSize.y - margin);
             break;
         case 3: // Bottom Right
-            basePosition = ImVec2(vp->Pos.x + vp->Size.x - margin, vp->Pos.y + vp->Size.y - margin);
+            basePosition = ImVec2(vp->Pos.x + vpSize.x - margin, vp->Pos.y + vpSize.y - margin);
             break;
         case 4: // Hidden
             return;

@@ -1,4 +1,5 @@
 #include "SohModals.h"
+#include "DualScreen.h"
 #include <imgui.h>
 #include <ship/window/Window.h>
 #include <vector>
@@ -39,7 +40,7 @@ void SohModalWindow::DrawElement() {
             modals.erase(modals.begin());
             closePopup = false;
         }
-        ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+        ImGui::SetNextWindowPos(DualScreen::GetMenuCenter(), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
         if (ImGui::BeginPopupModal(curModal.title_.c_str(), NULL,
                                    ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoResize |
                                        ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar |

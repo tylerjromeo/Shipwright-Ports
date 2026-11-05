@@ -81,6 +81,8 @@ public class MainActivity extends SDLActivity{
     private static final String SUPPORT_FILES_VERSION = "soh-9.3.1-torch-support-2";
     private AlertDialog dataRootMigrationDialog;
     private AlertDialog setupProgressDialog;
+    // Draws the ImGui menus/trackers on a second physical display, when the device has one.
+    private DualScreenManager dualScreenManager;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -107,6 +109,8 @@ public class MainActivity extends SDLActivity{
 
         setupControllerOverlay();
         attachController();
+
+        dualScreenManager = new DualScreenManager(this);
 
         Log.i("SoH", "onCreate complete");
     }
@@ -893,6 +897,8 @@ public class MainActivity extends SDLActivity{
     @Override
     protected void onPause() {
         if (integratedTouchView != null) integratedTouchView.suspend();
+        // The presentation isn't tied to this activity's window; dismiss it so it doesn't linger with a stale frame.
+        if (dualScreenManager != null) dualScreenManager.stop();
         super.onPause();
         setItemButtonHeld(false);
         mIsAiming = false;
@@ -902,6 +908,16 @@ public class MainActivity extends SDLActivity{
     protected void onResume() {
         super.onResume();
         if (integratedTouchView != null) integratedTouchView.resume();
+        if (dualScreenManager != null && !mBrokenLibraries) dualScreenManager.start();
+    }
+
+    @Override
+    protected void onDestroy() {
+        if (dualScreenManager != null) {
+            dualScreenManager.stop();
+            dualScreenManager = null;
+        }
+        super.onDestroy();
     }
 
     @Override

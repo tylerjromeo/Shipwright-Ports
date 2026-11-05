@@ -30,6 +30,8 @@ jobs:
           git -C libultraship apply --ignore-space-change ../CMake/patches/libultraship-powervr.patch
           git -C libultraship apply --check ../CMake/patches/libultraship-android-fullscreen.patch
           git -C libultraship apply ../CMake/patches/libultraship-android-fullscreen.patch
+          git -C libultraship apply --check ../CMake/patches/libultraship-android-dual-screen.patch
+          git -C libultraship apply ../CMake/patches/libultraship-android-dual-screen.patch
       - name: Install host dependencies
         run: |
           sudo apt-get update

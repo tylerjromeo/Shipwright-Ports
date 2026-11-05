@@ -1,4 +1,5 @@
 #include "randomizer_tracker_windows.h"
+#include "soh/SohGui/DualScreen.h"
 
 #include <cstring>
 
@@ -28,6 +29,13 @@ bool BeginFloatWindows(const std::string& UniqueName, bool* open, const Color_RG
                        TrackerWindowType windowType, bool draggable, ImGuiWindowFlags flags) {
     ImGuiWindowFlags windowFlags = flags;
 
+    // Dual-screen devices: dock list trackers full-screen on the second screen, apply "move trackers" requests.
+    DualScreen::PlaceTrackerWindow(UniqueName);
+    const bool dockedOnSecondScreen = DualScreen::IsDockedTracker(UniqueName);
+    if (dockedOnSecondScreen) {
+        windowType = TRACKER_WINDOW_WINDOW; // floating windows can't dock
+    }
+
     if (windowFlags == 0) {
         windowFlags |= ImGuiWindowFlags_AlwaysVerticalScrollbar | ImGuiWindowFlags_NoFocusOnAppearing;
     }
@@ -42,7 +50,7 @@ bool BeginFloatWindows(const std::string& UniqueName, bool* open, const Color_RG
         }
     }
     ImVec4 bgColVec = VecFromRGBA8(bgCol);
-    if (IsDockedToMainDeck(UniqueName)) {
+    if (IsDockedToMainDeck(UniqueName) || dockedOnSecondScreen) {
         bgColVec.w = 1.0f;
     }
     ImGui::PushStyleColor(ImGuiCol_WindowBg, bgColVec);
